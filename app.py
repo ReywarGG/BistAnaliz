@@ -10,11 +10,10 @@ from bs4 import BeautifulSoup
 # ------------------------------------------------------------
 # SAYFA AYARLARI & ÖZEL STİL (CSS)
 # ------------------------------------------------------------
-st.set_page_config(page_title="BIST Terminal & AI Analiz", layout="wide", page_icon="📈")
+st.set_page_config(page_title="BIST SMC & Likidite Terminali", layout="wide", page_icon="📈")
 
 st.markdown("""
     <style>
-    /* Kart Yapıları */
     div[data-testid="stMetric"] {
         background-color: #1E222D;
         padding: 15px;
@@ -27,14 +26,12 @@ st.markdown("""
         font-size: 0.85rem !important;
         font-weight: 600;
     }
-    /* Konteyner Kenarlıkları */
     div[data-testid="stVerticalBlock"] > div[style*="border"] {
         background-color: #131722;
         border-radius: 12px;
         border: 1px solid #2A2E39 !important;
         padding: 15px;
     }
-    /* Başlık Stili */
     .main-title {
         font-size: 2.2rem;
         font-weight: 700;
@@ -46,7 +43,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">📈 BIST Akıllı Analiz & KAP Terminali</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">📈 BIST Akıllı Analiz & Likidite Terminali</div>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------
 # 1. TÜM BIST HİSSE LİSTESİ
@@ -130,9 +127,6 @@ def haberleri_cek(ticker: str) -> list:
         pass
     return haberler
 
-# ------------------------------------------------------------
-# 3. YEREL & ÜCRETSİZ NLP HABER ANALİZİ
-# ------------------------------------------------------------
 def kural_tabanli_haber_analizi(haberler: list) -> dict:
     if not haberler:
         return {"skor": 0, "durum": "⚪ Nötr / Veri Yok", "detay": "Analiz edilecek aktif haber akışı bulunamadı."}
@@ -154,7 +148,7 @@ def kural_tabanli_haber_analizi(haberler: list) -> dict:
         return {"skor": 0, "durum": "⚪ Nötr", "detay": "Dengeli haber akışı: Olumlu ve olumsuz sinyaller eşit ağırlıkta."}
 
 # ------------------------------------------------------------
-# 4. TEKNİK GÖSTERGELER
+# 3. PRICE ACTION & LİKİDİTE HESAPLAMA MOTORU
 # ------------------------------------------------------------
 def normalize_ticker(t: str) -> str:
     t = t.strip().upper()
@@ -171,31 +165,69 @@ def veri_cek(ticker: str) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
     return df
 
-def rsi_hesapla(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.where(avg_loss != 0, 100.0)
-
-def gostergeleri_hesapla(df: pd.DataFrame) -> pd.DataFrame:
+def swing_noktalari_hesapla(df: pd.DataFrame, window: int = 5):
+    """Solunda ve sağında N mum olan lokal en yüksek (Swing High) ve en düşükleri (Swing Low) bulur."""
     out = df.copy()
-    out["EMA20"] = out["Close"].ewm(span=20, adjust=False).mean()
-    out["EMA50"] = out["Close"].ewm(span=50, adjust=False).mean()
-    out["RSI"] = rsi_hesapla(out["Close"], 14)
+    out["Swing_High"] = np.nan
+    out["Swing_Low"] = np.nan
+
+    for i in range(window, len(df) - window):
+        high_range = df["High"].iloc[i - window : i + window + 1]
+        low_range = df["Low"].iloc[i - window : i + window + 1]
+
+        if df["High"].iloc[i] == high_range.max():
+            out.iloc[i, out.columns.get_loc("Swing_High")] = df["High"].iloc[i]
+
+        if df["Low"].iloc[i] == low_range.min():
+            out.iloc[i, out.columns.get_loc("Swing_Low")] = df["Low"].iloc[i]
+
     return out
+
+def likidite_ve_seviyeleri_analiz_et(df: pd.DataFrame):
+    """En yakın Destek/Direnç ve Buy-side / Sell-side Likidite havuzlarını tespit eder."""
+    df_swing = swing_noktalari_hesapla(df)
+    son_fiyat = df["Close"].iloc[-1]
+
+    # Son tespit edilen Swing seviyeleri
+    swing_highs = df_swing["Swing_High"].dropna().tolist()
+    swing_lows = df_swing["Swing_Low"].dropna().tolist()
+
+    # En yakın dirençler (Fiyatın üzerindeki tepe noktaları)
+    direncler = [h for h in swing_highs if h > son_fiyat]
+    # En yakın destekler (Fiyatın altındaki dip noktaları)
+    destekler = [l for l in swing_lows if l < son_fiyat]
+
+    en_yakin_direnc = min(direncler) if direncler else df["High"].max()
+    en_yakin_destek = max(destekler) if destekler else df["Low"].min()
+
+    # Likidite Havuzları (BSL & SSL)
+    # Buy-side Liquidity (BSL): Son tepe noktasının hemen üzeri (Stop-loss havuzu)
+    bsl = en_yakin_direnc * 1.005 
+    # Sell-side Liquidity (SSL): Son dip noktasının hemen altı (Stop-loss havuzu)
+    ssl = en_yakin_destek * 0.995 
+
+    direnc_mesafe = ((en_yakin_direnc - son_fiyat) / son_fiyat) * 100
+    destek_mesafe = ((son_fiyat - en_yakin_destek) / son_fiyat) * 100
+
+    return {
+        "son_fiyat": son_fiyat,
+        "destek": en_yakin_destek,
+        "direnc": en_yakin_direnc,
+        "bsl": bsl,
+        "ssl": ssl,
+        "destek_mesafe": destek_mesafe,
+        "direnc_mesafe": direnc_mesafe,
+        "df_swing": df_swing
+    }
 
 # ============================================================
 # ARAYÜZ VE SEKMELER
 # ============================================================
 tum_hisseler = tum_bist_hisselerini_getir()
-tab1, tab2 = st.tabs(["📊 Hisse & KAP Terminali", "🔎 Tüm BIST Tarama Panel"])
+tab1, tab2 = st.tabs(["📊 Price Action & Likidite Terminali", "🔎 Destek/Direnç Tarama"])
 
 # ------------------------------------------------------------
-# TAB 1 — MODERN HİSSE TERMINALİ
+# TAB 1 — PRICE ACTION & LİKİDİTE TERMINALI
 # ------------------------------------------------------------
 with tab1:
     with st.container(border=True):
@@ -209,35 +241,37 @@ with tab1:
     ticker = normalize_ticker(hisse_kodu)
 
     if ticker:
-        with st.spinner(f"**{ticker}** piyasa verileri ve KAP haberleri getiriliyor..."):
+        with st.spinner(f"**{ticker}** Price Action & Likidite Haritası çıkarılıyor..."):
             raw = veri_cek(ticker)
             haberler = haberleri_cek(ticker)
 
         if raw.empty:
             st.error("⚠️ Hisse verisi çekilemedi. Kodun doğruluğunu kontrol edin.")
         else:
-            data = gostergeleri_hesapla(raw)
-            son = data.iloc[-1]
-            onceki = data.iloc[-2] if len(data) > 1 else son
+            pa_data = likidite_ve_seviyeleri_analiz_et(raw)
+            son = raw.iloc[-1]
+            onceki = raw.iloc[-2] if len(raw) > 1 else son
             degisim_pct = ((son["Close"] - onceki["Close"]) / onceki["Close"] * 100) if onceki["Close"] else 0
 
-            # Şık Metrik Kartları
+            # Şık Metrik Kartları (SMC Odaklı)
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Son Fiyat", f"{son['Close']:.2f} TL", f"{degisim_pct:+.2f}%")
-            
-            rsi_val = son['RSI']
-            rsi_text = f"{rsi_val:.1f}" if pd.notna(rsi_val) else "—"
-            c2.metric("RSI (14)", rsi_text, "Aşırı Alım" if rsi_val > 70 else ("Aşırı Satım" if rsi_val < 30 else "Nötr"))
-            
-            c3.metric("EMA (20)", f"{son['EMA20']:.2f} TL")
-            c4.metric("EMA (50)", f"{son['EMA50']:.2f} TL")
+            c1.metric("Son Fiyat", f"{pa_data['son_fiyat']:.2f} TL", f"{degisim_pct:+.2f}%")
+            c2.metric("En Yakın Destek (Swing Low)", f"{pa_data['destek']:.2f} TL", f"-%{pa_data['destek_mesafe']:.1f} Uzaklık")
+            c3.metric("En Yakın Direnç (Swing High)", f"{pa_data['direnc']:.2f} TL", f"+%{pa_data['direnc_mesafe']:.1f} Uzaklık")
+            c4.metric("Üst Likidite (BSL - Buy Side)", f"{pa_data['bsl']:.2f} TL", "Stop-Loss Havuzu")
 
-            # Fiyat Grafiği
+            # Fiyat Grafiği ve Swing Seviyeleri
             st.write("")
-            st.subheader("📈 Fiyat & Hareketli Ortalamalar (EMA)")
-            st.line_chart(data[["Close", "EMA20", "EMA50"]], height=320)
+            st.subheader("🎯 Swing High/Low ve Destek/Direnç Seviyeleri")
+            
+            # Grafik İçin Veri Hazırlığı
+            chart_df = pa_data["df_swing"][["Close"]].copy()
+            chart_df["Direnç (Swing High)"] = pa_data["direnc"]
+            chart_df["Destek (Swing Low)"] = pa_data["destek"]
+            
+            st.line_chart(chart_df, height=340)
 
-            # Analiz ve Haber Bölümü
+            # Analiz ve Likidite Yorum Alanı
             col_news, col_analysis = st.columns([1, 1])
 
             with col_news:
@@ -253,29 +287,33 @@ with tab1:
 
             with col_analysis:
                 with st.container(border=True):
-                    st.subheader("🧠 Akıllı Haber & Trend Sentezi")
+                    st.subheader("🧠 SMC & Likidite Analiz Özeti")
                     st.divider()
                     
-                    nlp_sonuc = kural_tabanli_haber_analizi(haberler)
-                    
-                    st.markdown(f"**Haber Sentiment Sinyali:** `{nlp_sonuc['durum']}`")
-                    st.caption(nlp_sonuc["detay"])
-                    st.write("")
-
-                    st.markdown("**Teknik Trend Eğilimi:**")
-                    if son["EMA20"] > son["EMA50"]:
-                        st.success("🟢 **Boğa Trendi (Yükseliş)** — EMA20 ortalaması EMA50'nin üzerinde seyrediyor.")
+                    # Konum Değerlendirmesi
+                    if pa_data['destek_mesafe'] < 2.0:
+                        st.warning(f"⚠️ **Destek Bölgesine Çok Yakın!** Fiyat desteğe yalnızca %{pa_data['destek_mesafe']:.1f} mesafede. Altındaki Sell-side Liquidity (SSL: {pa_data['ssl']:.2f} TL) süpürülebilir.")
+                    elif pa_data['direnc_mesafe'] < 2.0:
+                        st.info(f"🚀 **Direnç Bölgesine Yakın!** Fiyat dirence %{pa_data['direnc_mesafe']:.1f} mesafede. Üstündeki Buy-side Liquidity (BSL: {pa_data['bsl']:.2f} TL) hedeflenebilir.")
                     else:
-                        st.error("🔴 **Ayı Trendi (Düşüş)** — EMA20 ortalaması EMA50'nin altında seyrediyor.")
+                        st.success(f"⚖️ **Kanal Ortasında:** Fiyat destek ve direnç arasında dengeli bir bölgede bulunuyor.")
+
+                    st.write("")
+                    st.markdown(f"• **Buy-Side Liquidity (BSL):** `{pa_data['bsl']:.2f} TL` (Satıcı stop emri havuzu)")
+                    st.markdown(f"• **Sell-Side Liquidity (SSL):** `{pa_data['ssl']:.2f} TL` (Alıcı stop emri havuzu)")
+
+                    nlp_sonuc = kural_tabanli_haber_analizi(haberler)
+                    st.write("---")
+                    st.markdown(f"**Haber Sentiment Sinyali:** `{nlp_sonuc['durum']}`")
 
 # ------------------------------------------------------------
-# TAB 2 — TÜM BIST TARAMA PANELİ
+# TAB 2 — DESTEK / DİRENÇ TARAMA PANELİ
 # ------------------------------------------------------------
 with tab2:
-    st.subheader(f"🔎 BIST Tüm Hisseler Taraması ({len(tum_hisseler)} Hisse)")
-    st.caption("Tüm BIST hisselerinin anlık fiyat, RSI ve EMA trend durumlarını listeleyin.")
+    st.subheader(f"🔎 Destek ve Direncine Yaklaşan Hisseler ({len(tum_hisseler)} Hisse)")
+    st.caption("Fiyatı kırılım veya tepki alma ihtimali yüksek olan destek/direncine yakın BIST hisselerini tarayın.")
 
-    if st.button("🚀 Taramayı Başlat", type="primary"):
+    if st.button("🚀 SMC Taramasını Başlat", type="primary"):
         sonuclar = []
         bar = st.progress(0, text="Hisseler taranıyor...")
 
@@ -283,18 +321,27 @@ with tab2:
             t_kod = normalize_ticker(h_kodu)
             try:
                 df_raw = veri_cek(t_kod)
-                if not df_raw.empty and len(df_raw) > 2:
-                    df_g = gostergeleri_hesapla(df_raw)
-                    s = df_g.iloc[-1]
-                    o = df_g.iloc[-2]
-                    pct = ((s["Close"] - o["Close"]) / o["Close"] * 100) if o["Close"] else 0
+                if not df_raw.empty and len(df_raw) > 15:
+                    pa = likidite_ve_seviyeleri_analiz_et(df_raw)
+                    son = df_raw.iloc[-1]
+                    onceki = df_raw.iloc[-2] if len(df_raw) > 1 else son
+                    pct = ((son["Close"] - onceki["Close"]) / onceki["Close"] * 100) if onceki["Close"] else 0
+
+                    konum = "Nötr"
+                    if pa['destek_mesafe'] <= 2.5:
+                        konum = "🟢 Desteğe Yakın (Tepki Bölgesi)"
+                    elif pa['direnc_mesafe'] <= 2.5:
+                        konum = "🔴 Dirence Yakın (Test Bölgesi)"
 
                     sonuclar.append({
                         "Hisse": h_kodu,
-                        "Fiyat (TL)": round(float(s["Close"]), 2),
+                        "Fiyat (TL)": round(float(pa['son_fiyat']), 2),
                         "Günlük %": round(float(pct), 2),
-                        "RSI (14)": round(float(s["RSI"]), 1) if pd.notna(s["RSI"]) else None,
-                        "Trend": "🟢 Yükseliş" if s["EMA20"] > s["EMA50"] else "🔴 Düşüş"
+                        "Destek (TL)": round(float(pa['destek']), 2),
+                        "Direnç (TL)": round(float(pa['direnc']), 2),
+                        "Destek Mesafe (%)": round(float(pa['destek_mesafe']), 1),
+                        "Direnç Mesafe (%)": round(float(pa['direnc_mesafe']), 1),
+                        "Konum": konum
                     })
             except Exception:
                 pass
@@ -306,9 +353,9 @@ with tab2:
         df_res = pd.DataFrame(sonuclar)
         st.dataframe(
             df_res.style.map(
-                lambda v: "color: #00E676; font-weight: bold" if "Yükseliş" in str(v)
-                else ("color: #FF5252; font-weight: bold" if "Düşüş" in str(v) else ""),
-                subset=["Trend"]
+                lambda v: "color: #00E676; font-weight: bold" if "Desteğe Yakın" in str(v)
+                else ("color: #FF5252; font-weight: bold" if "Dirence Yakın" in str(v) else ""),
+                subset=["Konum"]
             ),
             use_container_width=True, hide_index=True
         )
