@@ -7,18 +7,52 @@ import streamlit as st
 import yfinance as yf
 from bs4 import BeautifulSoup
 
-st.set_page_config(page_title="BIST Analiz & Haber Akışı", layout="wide", page_icon="📊")
-st.title("📊 BIST Analiz & Ücretsiz Haber Sentez Sistemi")
+# ------------------------------------------------------------
+# SAYFA AYARLARI & ÖZEL STİL (CSS)
+# ------------------------------------------------------------
+st.set_page_config(page_title="BIST Terminal & AI Analiz", layout="wide", page_icon="📈")
+
+st.markdown("""
+    <style>
+    /* Kart Yapıları */
+    div[data-testid="stMetric"] {
+        background-color: #1E222D;
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #2A2E39;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    }
+    div[data-testid="stMetric"] label {
+        color: #787B86 !important;
+        font-size: 0.85rem !important;
+        font-weight: 600;
+    }
+    /* Konteyner Kenarlıkları */
+    div[data-testid="stVerticalBlock"] > div[style*="border"] {
+        background-color: #131722;
+        border-radius: 12px;
+        border: 1px solid #2A2E39 !important;
+        padding: 15px;
+    }
+    /* Başlık Stili */
+    .main-title {
+        font-size: 2.2rem;
+        font-weight: 700;
+        background: linear-gradient(90deg, #2962FF, #00E676);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.5rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="main-title">📈 BIST Akıllı Analiz & KAP Terminali</div>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------
-# 1. TÜM BIST HİSSE LİSTESİ (KAPSAMLI YEDEK LİSTE İLE)
+# 1. TÜM BIST HİSSE LİSTESİ
 # ------------------------------------------------------------
 @st.cache_data(ttl=86400, show_spinner=False)
 def tum_bist_hisselerini_getir() -> list:
-    """
-    İş Yatırım web kaynağından BIST hisselerini dinamik çeker.
-    Çekemezse kapsayıcı BIST yedek listesini kullanır.
-    """
     try:
         url = "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/default.aspx"
         res = requests.get(url, timeout=5)
@@ -32,7 +66,6 @@ def tum_bist_hisselerini_getir() -> list:
     except Exception:
         pass
 
-    # Web kazıma başarısız olursa kullanılacak tam BIST hisse listesi
     return sorted([
         "A1CAP", "AAV", "ACSEL", "ADEL", "ADESE", "AEFES", "AFYON", "AGESA", "AGHOL", "AGROT",
         "AHGAZ", "AKBNK", "AKCNS", "AKFGY", "AKFYE", "AKGRT", "AKMGY", "AKSA", "AKSEN", "AKSGY",
@@ -81,8 +114,6 @@ def tum_bist_hisselerini_getir() -> list:
 def haberleri_cek(ticker: str) -> list:
     haberler = []
     clean_code = ticker.replace(".IS", "")
-    
-    # Google News RSS üzerinden BIST / KAP haber araması
     try:
         rss_url = f"https://news.google.com/rss/search?q={clean_code}+hisse+OR+KAP+OR+borsa&hl=tr&gl=TR&ceid=TR:tr"
         res = requests.get(rss_url, timeout=5)
@@ -97,44 +128,33 @@ def haberleri_cek(ticker: str) -> list:
                     haberler.append({"baslik": title, "kaynak": source, "link": link})
     except Exception:
         pass
-
     return haberler
 
 # ------------------------------------------------------------
-# 3. YEREL & ÜCRETSİZ NLP HABER ANALİZİ (API'SİZ)
+# 3. YEREL & ÜCRETSİZ NLP HABER ANALİZİ
 # ------------------------------------------------------------
 def kural_tabanli_haber_analizi(haberler: list) -> dict:
     if not haberler:
-        return {"skor": 0, "durum": "⚪ Nötr / Veri Yok", "detay": "Analiz edilecek haber bulunamadı."}
+        return {"skor": 0, "durum": "⚪ Nötr / Veri Yok", "detay": "Analiz edilecek aktif haber akışı bulunamadı."}
 
     pozitif_kelimeler = ["anlaşma", "sözleşme", "rekor", "yükseliş", "kâr", "artış", "temettü", "onay", "büyüme", "ihale", "alım", "ortaklık"]
     negatif_kelimeler = ["zarar", "düşüş", "ceza", "iptal", "dava", "soruşturma", "sıkıntı", "istifa", "zararda", "geriledi", "satış", "fesih"]
 
-    p_skor = 0
-    n_skor = 0
+    p_skor = sum(1 for h in haberler for p in pozitif_kelimeler if p in h["baslik"].lower())
+    n_skor = sum(1 for h in haberler for n in negatif_kelimeler if n in h["baslik"].lower())
 
-    for h in haberler:
-        baslik = h["baslik"].lower()
-        for p in pozitif_kelimeler:
-            if p in baslik:
-                p_skor += 1
-        for n in negatif_kelimeler:
-            if n in baslik:
-                n_skor += 1
-
-    toplam = p_skor + n_skor
-    if toplam == 0:
-        return {"skor": 0, "durum": "⚪ Nötr / Dengeli", "detay": "Haber başlıklarında belirgin pozitif veya negatif finansal anahtar kelime bulunamadı."}
+    if p_skor + n_skor == 0:
+        return {"skor": 0, "durum": "⚪ Nötr / Dengeli", "detay": "Haber başlıklarında belirgin pozitif veya negatif finansal anahtar kelime algılanmadı."}
     
     if p_skor > n_skor:
-        return {"skor": p_skor, "durum": "🟢 Olumlu (Pozitif Akış)", "detay": f"Haberlerde {p_skor} adet olumlu finansal anahtar kelime öne çıkıyor (sözleşme, kâr, ihale vb.)."}
+        return {"skor": p_skor, "durum": "🟢 Pozitif Akış", "detay": f"Haber başlıklarında **{p_skor} adet** olumlu finansal kelime tespit edildi (sözleşme, kâr, ihale vb.)."}
     elif n_skor > p_skor:
-        return {"skor": -n_skor, "durum": "🔴 Olumsuz (Riskli Akış)", "detay": f"Haberlerde {n_skor} adet olumsuz finansal kelime tespit edildi (düşüş, zarar, dava vb.)."}
+        return {"skor": -n_skor, "durum": "🔴 Riskli / Negatif Akış", "detay": f"Haber başlıklarında **{n_skor} adet** risk unsuru içeren kelime tespit edildi (düşüş, zarar vb.)."}
     else:
-        return {"skor": 0, "durum": "⚪ Nötr", "detay": "Olumlu ve olumsuz haber başlıkları eşit ağırlıkta."}
+        return {"skor": 0, "durum": "⚪ Nötr", "detay": "Dengeli haber akışı: Olumlu ve olumsuz sinyaller eşit ağırlıkta."}
 
 # ------------------------------------------------------------
-# 4. TEKNİK GÖSTERGELER VE VERİ
+# 4. TEKNİK GÖSTERGELER
 # ------------------------------------------------------------
 def normalize_ticker(t: str) -> str:
     t = t.strip().upper()
@@ -169,79 +189,95 @@ def gostergeleri_hesapla(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # ============================================================
-# SEKMELER VE ARAYÜZ
+# ARAYÜZ VE SEKMELER
 # ============================================================
 tum_hisseler = tum_bist_hisselerini_getir()
-tab1, tab2 = st.tabs(["🔍 Hisse & Haber Analizi", "🔎 Tüm BIST Tarama"])
+tab1, tab2 = st.tabs(["📊 Hisse & KAP Terminali", "🔎 Tüm BIST Tarama Panel"])
 
 # ------------------------------------------------------------
-# TAB 1 — TEKLİ ANALİZ VE HABER SENTEZİ
+# TAB 1 — MODERN HİSSE TERMINALİ
 # ------------------------------------------------------------
 with tab1:
-    col_sel, col_txt = st.columns([2, 1])
-    with col_sel:
-        secilen = st.selectbox(f"Tüm BIST Hisselerinden Seçin ({len(tum_hisseler)} Hisse)", tum_hisseler, index=0)
-    with col_txt:
-        manuel = st.text_input("Veya Hisse Kodu Yazın", placeholder="Örn: EREGL")
+    with st.container(border=True):
+        col_sel, col_txt = st.columns([3, 1])
+        with col_sel:
+            secilen = st.selectbox(f"BIST Hisse Seçimi ({len(tum_hisseler)} Hisse)", tum_hisseler, index=0)
+        with col_txt:
+            manuel = st.text_input("Hızlı Kod Arama", placeholder="Örn: EREGL")
 
     hisse_kodu = manuel if manuel else secilen
     ticker = normalize_ticker(hisse_kodu)
 
     if ticker:
-        with st.spinner(f"{ticker} verileri ve haberleri çekiliyor..."):
+        with st.spinner(f"**{ticker}** piyasa verileri ve KAP haberleri getiriliyor..."):
             raw = veri_cek(ticker)
             haberler = haberleri_cek(ticker)
 
         if raw.empty:
-            st.error("Veri çekilemedi. Kodun doğruluğunu kontrol edin.")
+            st.error("⚠️ Hisse verisi çekilemedi. Kodun doğruluğunu kontrol edin.")
         else:
             data = gostergeleri_hesapla(raw)
             son = data.iloc[-1]
             onceki = data.iloc[-2] if len(data) > 1 else son
             degisim_pct = ((son["Close"] - onceki["Close"]) / onceki["Close"] * 100) if onceki["Close"] else 0
 
-            # Fiyat Paneli
+            # Şık Metrik Kartları
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Son Fiyat", f"{son['Close']:.2f} TL", f"{degisim_pct:+.2f}%")
-            c2.metric("RSI (14)", f"{son['RSI']:.1f}" if pd.notna(son['RSI']) else "—")
-            c3.metric("EMA20", f"{son['EMA20']:.2f}")
-            c4.metric("EMA50", f"{son['EMA50']:.2f}")
+            
+            rsi_val = son['RSI']
+            rsi_text = f"{rsi_val:.1f}" if pd.notna(rsi_val) else "—"
+            c2.metric("RSI (14)", rsi_text, "Aşırı Alım" if rsi_val > 70 else ("Aşırı Satım" if rsi_val < 30 else "Nötr"))
+            
+            c3.metric("EMA (20)", f"{son['EMA20']:.2f} TL")
+            c4.metric("EMA (50)", f"{son['EMA50']:.2f} TL")
 
-            st.line_chart(data[["Close", "EMA20", "EMA50"]])
+            # Fiyat Grafiği
+            st.write("")
+            st.subheader("📈 Fiyat & Hareketli Ortalamalar (EMA)")
+            st.line_chart(data[["Close", "EMA20", "EMA50"]], height=320)
 
+            # Analiz ve Haber Bölümü
             col_news, col_analysis = st.columns([1, 1])
 
             with col_news:
-                st.subheader("📰 Güncel KAP & BIST Haber Akışı")
-                if haberler:
-                    for h in haberler:
-                        st.markdown(f"• **[{h['baslik']}]({h['link']})**\n*{h['kaynak']}*")
-                else:
-                    st.info("Bu hisse için yakın zamanda haber akışı bulunamadı.")
+                with st.container(border=True):
+                    st.subheader("📰 Anlık KAP & BIST Haber Akışı")
+                    st.divider()
+                    if haberler:
+                        for h in haberler:
+                            st.markdown(f"🔹 **[{h['baslik']}]({h['link']})**  \n*Kaynağı: {h['kaynak']}*")
+                            st.write("---")
+                    else:
+                        st.info("Bu hisse için yakın zamanda haber akışı bulunamadı.")
 
             with col_analysis:
-                st.subheader("🧠 Haber & Sinyal Analizi (API'siz)")
-                nlp_sonuc = kural_tabanli_haber_analizi(haberler)
-                
-                st.info(f"**Haber Duygu Durumu:** {nlp_sonuc['durum']}")
-                st.write(nlp_sonuc["detay"])
-                
-                # Teknik Özet
-                st.markdown("**Teknik Eğilim:**")
-                if son["EMA20"] > son["EMA50"]:
-                    st.success("🟢 Yükseliş Eğilimi (EMA20, EMA50'nin üzerinde)")
-                else:
-                    st.error("🔴 Düşüş Eğilimi (EMA20, EMA50'nin altında)")
+                with st.container(border=True):
+                    st.subheader("🧠 Akıllı Haber & Trend Sentezi")
+                    st.divider()
+                    
+                    nlp_sonuc = kural_tabanli_haber_analizi(haberler)
+                    
+                    st.markdown(f"**Haber Sentiment Sinyali:** `{nlp_sonuc['durum']}`")
+                    st.caption(nlp_sonuc["detay"])
+                    st.write("")
+
+                    st.markdown("**Teknik Trend Eğilimi:**")
+                    if son["EMA20"] > son["EMA50"]:
+                        st.success("🟢 **Boğa Trendi (Yükseliş)** — EMA20 ortalaması EMA50'nin üzerinde seyrediyor.")
+                    else:
+                        st.error("🔴 **Ayı Trendi (Düşüş)** — EMA20 ortalaması EMA50'nin altında seyrediyor.")
 
 # ------------------------------------------------------------
-# TAB 2 — TÜM BIST TARAMA
+# TAB 2 — TÜM BIST TARAMA PANELİ
 # ------------------------------------------------------------
 with tab2:
     st.subheader(f"🔎 BIST Tüm Hisseler Taraması ({len(tum_hisseler)} Hisse)")
+    st.caption("Tüm BIST hisselerinin anlık fiyat, RSI ve EMA trend durumlarını listeleyin.")
 
-    if st.button("🚀 Taramayı Başlat"):
+    if st.button("🚀 Taramayı Başlat", type="primary"):
         sonuclar = []
-        bar = st.progress(0, text="Taranıyor...")
+        bar = st.progress(0, text="Hisseler taranıyor...")
 
         for i, h_kodu in enumerate(tum_hisseler):
             t_kod = normalize_ticker(h_kodu)
@@ -255,10 +291,10 @@ with tab2:
 
                     sonuclar.append({
                         "Hisse": h_kodu,
-                        "Fiyat": round(float(s["Close"]), 2),
+                        "Fiyat (TL)": round(float(s["Close"]), 2),
                         "Günlük %": round(float(pct), 2),
-                        "RSI": round(float(s["RSI"]), 1) if pd.notna(s["RSI"]) else None,
-                        "Trend": "Yükseliş" if s["EMA20"] > s["EMA50"] else "Düşüş"
+                        "RSI (14)": round(float(s["RSI"]), 1) if pd.notna(s["RSI"]) else None,
+                        "Trend": "🟢 Yükseliş" if s["EMA20"] > s["EMA50"] else "🔴 Düşüş"
                     })
             except Exception:
                 pass
@@ -266,4 +302,13 @@ with tab2:
             bar.progress((i + 1) / len(tum_hisseler), text=f"Taranıyor... {h_kodu}")
 
         bar.empty()
-        st.dataframe(pd.DataFrame(sonuclar), use_container_width=True)
+        
+        df_res = pd.DataFrame(sonuclar)
+        st.dataframe(
+            df_res.style.map(
+                lambda v: "color: #00E676; font-weight: bold" if "Yükseliş" in str(v)
+                else ("color: #FF5252; font-weight: bold" if "Düşüş" in str(v) else ""),
+                subset=["Trend"]
+            ),
+            use_container_width=True, hide_index=True
+        )
